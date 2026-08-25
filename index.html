@@ -395,7 +395,7 @@ const MONTHS_SHORT = ["ينا", "فبر", "مار", "أبر", "ماي", "يون"
 const DEFAULT_DATA = {
   accountName: "BAKHIT ALI MOHAMMED AL MAASHANI",
   accountNumber: "0398043661180027",
-  balance: 775,
+  openingBalance: 735,
   monthlyDue: 10,
   selectedYear: 2026,
   selectedMonthIndex: 7,
@@ -450,6 +450,15 @@ const DEFAULT_DATA = {
   }],
   withdrawals: []
 };
+function migrateData(parsed) {
+  if (parsed && parsed.openingBalance === undefined && parsed.balance !== undefined) {
+    const totalPayments = (parsed.members || []).reduce((s, m) => s + Object.values(m.payments || {}).reduce((ss, v) => ss + Number(v || 0), 0), 0);
+    const totalWithdrawals = (parsed.withdrawals || []).reduce((s, w) => s + Number(w.amount || 0), 0);
+    parsed.openingBalance = parsed.balance - totalPayments + totalWithdrawals;
+    delete parsed.balance;
+  }
+  return parsed;
+}
 function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -503,7 +512,7 @@ function WalletDashboardApp() {
       try {
         const res = await window.storage.get(STORAGE_KEY, false);
         if (res && res.value) {
-          const parsed = JSON.parse(res.value);
+          const parsed = migrateData(JSON.parse(res.value));
           setData(parsed);
           setStatsYear(parsed.selectedYear);
         } else {
@@ -547,9 +556,9 @@ function WalletDashboardApp() {
       return next;
     });
   };
-  const flashToast = msg => {
+  const flashToast = (msg, duration = 2200) => {
     setToast(msg);
-    setTimeout(() => setToast(""), 2200);
+    setTimeout(() => setToast(""), duration);
   };
   const requireAdmin = () => {
     if (!isAdmin) {
@@ -662,7 +671,7 @@ function WalletDashboardApp() {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const parsed = JSON.parse(reader.result);
+        const parsed = migrateData(JSON.parse(reader.result));
         if (!parsed.members) throw new Error("bad shape");
         update(() => parsed);
         setStatsYear(parsed.selectedYear);
@@ -702,14 +711,21 @@ function WalletDashboardApp() {
         },
         body: JSON.stringify(body)
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const errJson = await res.json();
+          detail = errJson.message || "";
+        } catch (_) {}
+        throw new Error(`HTTP ${res.status}${detail ? " - " + detail : ""}`);
+      }
       const json = await res.json();
       const newGistId = json.id;
       setGhGistId(newGistId);
       await persistGhConfig(ghToken.trim(), newGistId);
       flashToast("تم حفظ نسخة البيانات في GitHub Gist");
     } catch (e) {
-      flashToast("تعذر الحفظ في GitHub، تأكد من صحة الـ Token");
+      flashToast("خطأ: " + (e.message || "تعذر الحفظ في GitHub"), 6000);
     } finally {
       setGistBusy(false);
     }
@@ -728,18 +744,25 @@ function WalletDashboardApp() {
           Accept: "application/vnd.github+json"
         }
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const errJson = await res.json();
+          detail = errJson.message || "";
+        } catch (_) {}
+        throw new Error(`HTTP ${res.status}${detail ? " - " + detail : ""}`);
+      }
       const json = await res.json();
       const file = json.files?.["wallet-data.json"];
-      if (!file) throw new Error("no file");
-      const parsed = JSON.parse(file.content);
-      if (!parsed.members) throw new Error("bad shape");
+      if (!file) throw new Error("لا يوجد ملف wallet-data.json داخل هذا الـ Gist");
+      const parsed = migrateData(JSON.parse(file.content));
+      if (!parsed.members) throw new Error("محتوى الملف غير صالح");
       update(() => parsed);
       setStatsYear(parsed.selectedYear);
       await persistGhConfig(ghToken.trim(), ghGistId.trim());
       flashToast("تم استرجاع البيانات من GitHub بنجاح");
     } catch (e) {
-      flashToast("تعذر الاسترجاع من GitHub، تحقق من الـ Token و Gist ID");
+      flashToast("خطأ: " + (e.message || "تعذر الاسترجاع من GitHub"), 6000);
     } finally {
       setGistBusy(false);
     }
@@ -759,8 +782,24 @@ function WalletDashboardApp() {
   const selKey = mKey(data.selectedYear, data.selectedMonthIndex);
   const totalCollectedThisMonth = data.members.reduce((s, m) => s + (m.payments[selKey] || 0), 0);
   const paidCount = data.members.filter(m => (m.payments[selKey] || 0) >= data.monthlyDue).length;
-  const totalArrears = data.members.reduce((s, m) => s + Math.min(m.arrears, 0), 0);
   const totalWithdrawn = data.withdrawals.reduce((s, w) => s + Number(w.amount || 0), 0);
+  const totalAllPayments = data.members.reduce((s, m) => s + Object.values(m.payments).reduce((ss, v) => ss + Number(v || 0), 0), 0);
+  const currentBalance = data.openingBalance + totalAllPayments - totalWithdrawn;
+  const arrearsList = data.members.map(m => {
+    const thisMonthPaid = m.payments[selKey] || 0;
+    const unpaidThisMonth = thisMonthPaid < data.monthlyDue;
+    const owedThisMonth = unpaidThisMonth ? data.monthlyDue - thisMonthPaid : 0;
+    const legacyOwed = Math.abs(Math.min(m.arrears, 0));
+    return {
+      id: m.id,
+      name: m.name,
+      unpaidThisMonth,
+      owedThisMonth,
+      legacyOwed,
+      totalOwed: legacyOwed + owedThisMonth
+    };
+  }).filter(x => x.totalOwed > 0).sort((a, b) => b.totalOwed - a.totalOwed);
+  const totalArrears = -arrearsList.reduce((s, x) => s + x.totalOwed, 0);
   function goMonth(delta) {
     update(prev => {
       let idx = prev.selectedMonthIndex + delta;
@@ -810,8 +849,7 @@ function WalletDashboardApp() {
       }) => rest);
       return {
         ...prev,
-        members: cleaned,
-        balance: prev.balance + delta
+        members: cleaned
       };
     });
   }
@@ -822,21 +860,8 @@ function WalletDashboardApp() {
   }
   function payArrears(id) {
     if (!requireAdmin()) return;
-    update(prev => {
-      const members = prev.members.map(m => {
-        if (m.id !== id || m.arrears >= 0) return m;
-        return {
-          ...m,
-          arrears: Math.min(0, m.arrears + prev.monthlyDue)
-        };
-      });
-      return {
-        ...prev,
-        members,
-        balance: prev.balance + prev.monthlyDue
-      };
-    });
-    flashToast("تم تسجيل تسديد 10 ريال من المتأخرات");
+    bumpMemberAmount(id, data.monthlyDue);
+    flashToast("تم تسجيل تسديد " + data.monthlyDue + " ريال من المتأخرات");
   }
   function addArrears(id) {
     update(prev => ({
@@ -926,11 +951,8 @@ function WalletDashboardApp() {
     const isEdit = !!editWithdrawId;
     update(prev => {
       if (isEdit) {
-        const old = prev.withdrawals.find(w => w.id === editWithdrawId);
-        const oldAmount = old ? Number(old.amount) : 0;
         return {
           ...prev,
-          balance: prev.balance + (oldAmount - amount),
           withdrawals: prev.withdrawals.map(w => w.id === editWithdrawId ? {
             ...w,
             date: wDate,
@@ -942,7 +964,6 @@ function WalletDashboardApp() {
       }
       return {
         ...prev,
-        balance: prev.balance - amount,
         withdrawals: [{
           id: uid(),
           date: wDate,
@@ -962,15 +983,10 @@ function WalletDashboardApp() {
   }
   function removeWithdrawal(id) {
     if (!requireAdmin()) return;
-    update(prev => {
-      const w = prev.withdrawals.find(x => x.id === id);
-      if (!w) return prev;
-      return {
-        ...prev,
-        balance: prev.balance + Number(w.amount),
-        withdrawals: prev.withdrawals.filter(x => x.id !== id)
-      };
-    });
+    update(prev => ({
+      ...prev,
+      withdrawals: prev.withdrawals.filter(x => x.id !== id)
+    }));
   }
   function totalPaidToDate(member) {
     return Object.values(member.payments).reduce((s, v) => s + Number(v || 0), 0);
@@ -982,7 +998,7 @@ function WalletDashboardApp() {
     lines.push(`*${data.selectedYear}*`);
     lines.push(`اسم الحساب:- ${data.accountName}`);
     lines.push(`رقم الحساب :- ${data.accountNumber}`);
-    lines.push(`رصيد الحالي *${fmt(data.balance)}*ريال`);
+    lines.push(`رصيد الحالي *${fmt(currentBalance)}*ريال`);
     lines.push("");
     lines.push("اللي قد دفع حساب المحفظه");
     const nextKey = mKey(data.selectedMonthIndex === 11 ? data.selectedYear + 1 : data.selectedYear, data.selectedMonthIndex === 11 ? 0 : data.selectedMonthIndex + 1);
@@ -1016,12 +1032,18 @@ function WalletDashboardApp() {
       const yearTotal = MONTHS_SHORT.reduce((s, _, mi) => s + (m.payments[mKey(yearForStats, mi)] || 0), 0);
       const cells = MONTHS_SHORT.map((_, mi) => {
         const v = m.payments[mKey(yearForStats, mi)] || 0;
-        return `<td>${v > 0 ? fmt(v) : "—"}</td>`;
+        if (v > 0) return `<td class="pos">${fmt(v)}</td>`;
+        if (v < 0) return `<td class="neg">${fmt(v)}</td>`;
+        return `<td class="zero">—</td>`;
       }).join("");
-      return `<tr><td class="name">${escapeHtml(m.name)}</td>${cells}<td class="total">${fmt(yearTotal)}</td></tr>`;
+      const totalCls = yearTotal < 0 ? "neg" : yearTotal > 0 ? "pos" : "zero";
+      return `<tr><td class="name">${escapeHtml(m.name)}</td>${cells}<td class="total ${totalCls}">${fmt(yearTotal)}</td></tr>`;
     }).join("");
-    const totalsRow = `<tr><td class="name total">الإجمالي الشهري</td>${monthTotals.map(t => `<td class="total">${t > 0 ? fmt(t) : "—"}</td>`).join("")}<td class="total grand">${fmt(grandTotal)}</td></tr>`;
-    const headerCells = MONTHS_SHORT.map(m => `<th>${m}</th>`).join("");
+    const totalsRow = `<tr><td class="name total">الإجمالي الشهري</td>${monthTotals.map(t => {
+      const cls = t < 0 ? "neg" : t > 0 ? "pos" : "zero";
+      return `<td class="total ${cls}">${t !== 0 ? fmt(t) : "—"}</td>`;
+    }).join("")}<td class="total grand">${fmt(grandTotal)}</td></tr>`;
+    const headerCells = MONTHS_SHORT.map((_, mi) => `<th>${(mi + 1).toLocaleString("ar-OM")}</th>`).join("");
     const html = `<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>جدول المدفوعات ${yearForStats}</title>
 <style>
   body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#1B2A22;}
@@ -1033,13 +1055,25 @@ function WalletDashboardApp() {
   .total{font-weight:800;}
   .grand{color:#0B6E4F;}
   thead th{background:#eee;}
+  td.pos{color:#0B6E4F;font-weight:700;}
+  td.neg{color:#B3261E;font-weight:700;}
+  td.zero{color:#999;}
+  .toolbar{display:flex;gap:10px;margin-bottom:16px;}
+  .toolbar button{font-family:Tahoma,Arial,sans-serif;font-size:14px;padding:9px 18px;border-radius:8px;border:none;cursor:pointer;font-weight:700;}
+  .btn-print{background:#0B6E4F;color:#fff;}
+  .btn-close{background:#eee;color:#333;}
+  @media print{.toolbar{display:none;}}
 </style></head><body>
+<div class="toolbar">
+  <button class="btn-print" onclick="window.print()">🖨️ طباعة</button>
+  <button class="btn-close" onclick="window.close()">✕ إغلاق</button>
+</div>
 <h2>${escapeHtml(data.accountName)}</h2>
 <p>رقم الحساب: ${escapeHtml(data.accountNumber)}</p>
 <p>جدول المدفوعات السنوي — ${yearForStats}</p>
 <table><thead><tr><th>الاسم</th>${headerCells}<th>الإجمالي</th></tr></thead>
 <tbody>${rowsHtml}${totalsRow}</tbody></table>
-<p style="margin-top:16px;">الرصيد الحالي: ${fmt(data.balance)} ر.ع</p>
+<p style="margin-top:16px;">الرصيد الحالي: ${fmt(currentBalance)} ر.ع</p>
 </body></html>`;
     const win = window.open("", "_blank");
     if (!win) {
@@ -1050,9 +1084,6 @@ function WalletDashboardApp() {
     win.document.write(html);
     win.document.close();
     win.focus();
-    setTimeout(() => {
-      win.print();
-    }, 350);
   }
   function printWithdrawals() {
     const rows = data.withdrawals.map(w => {
@@ -1062,9 +1093,9 @@ function WalletDashboardApp() {
       return `<tr>
           <td>${escapeHtml(w.date)}</td>
           <td class="name">${escapeHtml(w.reason)}</td>
-          <td class="total">${fmt(Number(w.amount))}</td>
+          <td class="total neg">-${fmt(Number(w.amount))}</td>
           <td>${participants.length}</td>
-          <td>${fmt(share)}</td>
+          <td class="neg">-${fmt(share)}</td>
           <td class="names">${escapeHtml(names)}</td>
         </tr>`;
     }).join("");
@@ -1080,7 +1111,17 @@ function WalletDashboardApp() {
   td.names{text-align:right;font-size:10.5px;color:#333;}
   .total{font-weight:800;}
   thead th{background:#eee;}
+  td.neg{color:#B3261E;font-weight:700;}
+  .toolbar{display:flex;gap:10px;margin-bottom:16px;}
+  .toolbar button{font-family:Tahoma,Arial,sans-serif;font-size:14px;padding:9px 18px;border-radius:8px;border:none;cursor:pointer;font-weight:700;}
+  .btn-print{background:#0B6E4F;color:#fff;}
+  .btn-close{background:#eee;color:#333;}
+  @media print{.toolbar{display:none;}}
 </style></head><body>
+<div class="toolbar">
+  <button class="btn-print" onclick="window.print()">🖨️ طباعة</button>
+  <button class="btn-close" onclick="window.close()">✕ إغلاق</button>
+</div>
 <h2>${escapeHtml(data.accountName)}</h2>
 <p>رقم الحساب: ${escapeHtml(data.accountNumber)}</p>
 <p>سجل الاقتطاعات — إجمالي المسحوب: ${fmt(totalAmount)} ر.ع</p>
@@ -1088,7 +1129,7 @@ function WalletDashboardApp() {
   <th>التاريخ</th><th>السبب</th><th>المبلغ الإجمالي</th><th>عدد المشاركين</th><th>نصيب الفرد</th><th>الأعضاء المشاركون</th>
 </tr></thead>
 <tbody>${rows}</tbody></table>
-<p style="margin-top:16px;">الرصيد الحالي: ${fmt(data.balance)} ر.ع</p>
+<p style="margin-top:16px;">الرصيد الحالي: ${fmt(currentBalance)} ر.ع</p>
 </body></html>`;
     const win = window.open("", "_blank");
     if (!win) {
@@ -1099,9 +1140,6 @@ function WalletDashboardApp() {
     win.document.write(html);
     win.document.close();
     win.focus();
-    setTimeout(() => {
-      win.print();
-    }, 350);
   }
   const yearForStats = statsYear || data.selectedYear;
   const monthTotals = MONTHS_SHORT.map((_, mi) => data.members.reduce((s, m) => s + (m.payments[mKey(yearForStats, mi)] || 0), 0));
@@ -1138,7 +1176,7 @@ function WalletDashboardApp() {
     style: styles.sealLabel
   }, "الرصيد الحالي"), React.createElement("span", {
     style: styles.sealAmount
-  }, fmt(data.balance)), React.createElement("span", {
+  }, fmt(currentBalance)), React.createElement("span", {
     style: styles.sealCurrency
   }, "ريال عُماني")))), React.createElement("div", {
     style: styles.headerInfo
@@ -1177,13 +1215,13 @@ function WalletDashboardApp() {
     }
   }, React.createElement("label", {
     style: styles.fieldLabel
-  }, "الرصيد"), React.createElement("input", {
+  }, "الرصيد الافتتاحي (قبل بدء المتابعة)"), React.createElement("input", {
     style: styles.input,
     type: "number",
-    value: data.balance,
+    value: data.openingBalance,
     onChange: e => update(p => ({
       ...p,
-      balance: Number(e.target.value) || 0
+      openingBalance: Number(e.target.value) || 0
     }))
   })), React.createElement("div", {
     style: {
@@ -1343,14 +1381,16 @@ function WalletDashboardApp() {
       size: 12
     }))), React.createElement("div", {
       style: styles.memberTotal
-    }, "الإجمالي منذ البداية: ", fmt(totalPaidToDate(m)), " ر.ع"), m.arrears < 0 && React.createElement("div", {
+    }, "الإجمالي منذ البداية: ", fmt(totalPaidToDate(m)), " ر.ع"), (m.arrears < 0 || thisMonth < data.monthlyDue) && React.createElement("div", {
       style: styles.arrearsRow
-    }, React.createElement("span", {
+    }, thisMonth < data.monthlyDue && React.createElement("span", {
+      style: styles.unpaidTag
+    }, "متأخر هذا الشهر"), m.arrears < 0 && React.createElement(React.Fragment, null, React.createElement("span", {
       style: styles.arrearsTag
-    }, fmt(m.arrears), " متأخرات"), React.createElement("button", {
+    }, fmt(m.arrears), " متأخرات سابقة"), React.createElement("button", {
       style: styles.payArrearsBtn,
       onClick: () => payArrears(m.id)
-    }, "تسديد ١٠"))), React.createElement("div", {
+    }, "تسديد ", data.monthlyDue)))), React.createElement("div", {
       style: styles.amountStepper
     }, React.createElement("button", {
       style: styles.stepBtn,
@@ -1446,9 +1486,33 @@ function WalletDashboardApp() {
     style: styles.summaryChip
   }, React.createElement("span", {
     style: styles.summaryNum
-  }, fmt(data.balance)), React.createElement("span", {
+  }, fmt(currentBalance)), React.createElement("span", {
     style: styles.summaryLbl
   }, "الرصيد الحالي"))), React.createElement("div", {
+    style: styles.card,
+    className: "no-print"
+  }, React.createElement("h3", {
+    style: styles.sectionTitle
+  }, "قائمة المتأخرين (", arrearsList.length, ")"), arrearsList.length === 0 ? React.createElement("p", {
+    style: {
+      ...styles.hint,
+      textAlign: "center",
+      padding: "16px 0"
+    }
+  }, "لا يوجد متأخرون 🎉 الجميع سدّد شهر ", MONTHS_AR[data.selectedMonthIndex]) : arrearsList.map(x => React.createElement("div", {
+    key: x.id,
+    style: styles.arrearsListRow
+  }, React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, React.createElement("div", {
+    style: styles.memberName
+  }, x.name), React.createElement("div", {
+    style: styles.arrearsBreakdown
+  }, x.unpaidThisMonth && React.createElement("span", null, "متأخر هذا الشهر (", fmt(x.owedThisMonth), " ر.ع)"), x.unpaidThisMonth && x.legacyOwed > 0 && React.createElement("span", null, " · "), x.legacyOwed > 0 && React.createElement("span", null, "متأخرات سابقة (", fmt(x.legacyOwed), " ر.ع)"))), React.createElement("div", {
+    style: styles.arrearsTotalAmount
+  }, "-", fmt(x.totalOwed), " ر.ع")))), React.createElement("div", {
     style: styles.card
   }, React.createElement("div", {
     style: styles.statsHeaderRow,
@@ -2275,7 +2339,8 @@ const styles = {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    marginTop: 4
+    marginTop: 4,
+    flexWrap: "wrap"
   },
   arrearsTag: {
     fontSize: 11.5,
@@ -2284,6 +2349,33 @@ const styles = {
     padding: "2px 8px",
     borderRadius: 999,
     fontWeight: 700
+  },
+  unpaidTag: {
+    fontSize: 11.5,
+    color: "#B3261E",
+    background: "#FDE4E1",
+    padding: "2px 8px",
+    borderRadius: 999,
+    fontWeight: 700,
+    border: "1px solid #F3B9B2"
+  },
+  arrearsListRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 2px",
+    borderBottom: "1px solid #F3EFE2"
+  },
+  arrearsBreakdown: {
+    fontSize: 11,
+    color: "#B3261E",
+    marginTop: 3
+  },
+  arrearsTotalAmount: {
+    fontSize: 14,
+    fontWeight: 800,
+    color: "#B3261E",
+    fontFamily: "'Cairo', sans-serif"
   },
   payArrearsBtn: {
     fontSize: 11,
