@@ -15,7 +15,7 @@ const DEFAULT_DATA = {
   monthlyDue: 10,
   selectedYear: 2026,
   selectedMonthIndex: 7,
-  adminPasswordHash: null,
+  adminPasswordHash: "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9", // كلمة المرور الافتراضية: admin123
   members: [
     { id: "m1", name: "سعيد سالم", arrears: 0, payments: {} },
     { id: "m2", name: "سالم سعيد", arrears: 0, payments: {} },
@@ -81,6 +81,7 @@ export default function WalletDashboard() {
   const [loginPass, setLoginPass] = useState("");
   const [loginConfirm, setLoginConfirm] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [forgotPassConfirm, setForgotPassConfirm] = useState(false);
   const [rememberDevice, setRememberDevice] = useState(true);
   const [changePassOpen, setChangePassOpen] = useState(false);
   const [oldPass, setOldPass] = useState("");
@@ -203,6 +204,19 @@ export default function WalletDashboard() {
       await window.storage.delete(ADMIN_DEVICE_KEY, false);
     } catch (e) {}
     flashToast("تم تسجيل الخروج");
+  }
+
+  async function resetAdminPassword() {
+    update((prev) => ({ ...prev, adminPasswordHash: null }));
+    setIsAdmin(false);
+    try {
+      await window.storage.delete(ADMIN_DEVICE_KEY, false);
+    } catch (e) {}
+    setForgotPassConfirm(false);
+    setLoginPass("");
+    setLoginConfirm("");
+    setLoginError("");
+    flashToast("تمت إزالة كلمة المرور الحالية، أنشئ كلمة مرور جديدة الآن");
   }
 
   async function handleChangePassword() {
@@ -600,8 +614,9 @@ export default function WalletDashboard() {
         const yearTotal = MONTHS_SHORT.reduce((s, _, mi) => s + (m.payments[mKey(yearForStats, mi)] || 0), 0);
         const cells = MONTHS_SHORT.map((_, mi) => {
           const v = m.payments[mKey(yearForStats, mi)] || 0;
+          const isPastOrCurrent = yearForStats < data.selectedYear || (yearForStats === data.selectedYear && mi <= data.selectedMonthIndex);
           if (v > 0) return `<td class="pos">${fmt(v)}</td>`;
-          if (v < 0) return `<td class="neg">${fmt(v)}</td>`;
+          if (isPastOrCurrent) return `<td class="neg">—</td>`;
           return `<td class="zero">—</td>`;
         }).join("");
         const totalCls = yearTotal < 0 ? "neg" : yearTotal > 0 ? "pos" : "zero";
@@ -616,6 +631,17 @@ export default function WalletDashboard() {
       .join("")}<td class="total grand">${fmt(grandTotal)}</td></tr>`;
     const headerCells = MONTHS_SHORT.map((_, mi) => `<th>${(mi + 1).toLocaleString("ar-OM")}</th>`).join("");
 
+    const arrearsRows = arrearsList.length
+      ? arrearsList
+          .map((x) => {
+            const parts = [];
+            if (x.unpaidThisMonth) parts.push(`متأخر هذا الشهر (${fmt(x.owedThisMonth)} ر.ع)`);
+            if (x.legacyOwed > 0) parts.push(`متأخرات سابقة (${fmt(x.legacyOwed)} ر.ع)`);
+            return `<tr><td class="name">${escapeHtml(x.name)}</td><td>${escapeHtml(parts.join(" · "))}</td><td class="neg total">-${fmt(x.totalOwed)}</td></tr>`;
+          })
+          .join("")
+      : `<tr><td colspan="3" style="text-align:center;color:#0B6E4F;font-weight:700;">لا يوجد متأخرون 🎉</td></tr>`;
+
     const html = `<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>جدول المدفوعات ${yearForStats}</title>
 <style>
   body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#1B2A22;}
@@ -627,25 +653,37 @@ export default function WalletDashboard() {
   .total{font-weight:800;}
   .grand{color:#0B6E4F;}
   thead th{background:#eee;}
-  td.pos{color:#0B6E4F;font-weight:700;}
-  td.neg{color:#B3261E;font-weight:700;}
-  td.zero{color:#999;}
+  td.pos{color:#0B6E4F;font-weight:700;background:#EAF5EF;}
+  td.neg{color:#B3261E;font-weight:700;background:#FDECEA;}
+  td.zero{color:#B7ADA0;}
   .toolbar{display:flex;gap:10px;margin-bottom:16px;}
   .toolbar button{font-family:Tahoma,Arial,sans-serif;font-size:14px;padding:9px 18px;border-radius:8px;border:none;cursor:pointer;font-weight:700;}
   .btn-print{background:#0B6E4F;color:#fff;}
   .btn-close{background:#eee;color:#333;}
   @media print{.toolbar{display:none;}}
+  .letterhead{display:flex;align-items:center;gap:12px;border-bottom:2px solid #0B6E4F;padding-bottom:12px;margin-bottom:12px;}
+  .logo{width:46px;height:46px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#12946b,#084A36);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;box-shadow:0 2px 6px rgba(0,0,0,0.25) inset;}
+  .balance-box{background:#0B6E4F;color:#fff;border-radius:10px;padding:10px 16px;margin:14px 0;display:inline-block;font-weight:800;font-size:15px;}
+  h3.section{font-size:14px;margin:22px 0 8px;color:#0B6E4F;}
 </style></head><body>
 <div class="toolbar">
   <button class="btn-print" onclick="window.print()">🖨️ طباعة</button>
   <button class="btn-close" onclick="window.close()">✕ إغلاق</button>
 </div>
-<h2>${escapeHtml(data.accountName)}</h2>
-<p>رقم الحساب: ${escapeHtml(data.accountNumber)}</p>
+<div class="letterhead">
+  <div class="logo">💰</div>
+  <div>
+    <h2>${escapeHtml(data.accountName)}</h2>
+    <p>رقم الحساب: ${escapeHtml(data.accountNumber)}</p>
+  </div>
+</div>
+<div class="balance-box">الرصيد الحالي: ${fmt(currentBalance)} ر.ع</div>
 <p>جدول المدفوعات السنوي — ${yearForStats}</p>
 <table><thead><tr><th>الاسم</th>${headerCells}<th>الإجمالي</th></tr></thead>
 <tbody>${rowsHtml}${totalsRow}</tbody></table>
-<p style="margin-top:16px;">الرصيد الحالي: ${fmt(currentBalance)} ر.ع</p>
+<h3 class="section">قائمة المتأخرين (${arrearsList.length})</h3>
+<table><thead><tr><th>الاسم</th><th>التفاصيل</th><th>المبلغ المستحق</th></tr></thead>
+<tbody>${arrearsRows}</tbody></table>
 </body></html>`;
 
     const win = window.open("", "_blank");
@@ -697,19 +735,27 @@ export default function WalletDashboard() {
   .btn-print{background:#0B6E4F;color:#fff;}
   .btn-close{background:#eee;color:#333;}
   @media print{.toolbar{display:none;}}
+  .letterhead{display:flex;align-items:center;gap:12px;border-bottom:2px solid #0B6E4F;padding-bottom:12px;margin-bottom:12px;}
+  .logo{width:46px;height:46px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#12946b,#084A36);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;box-shadow:0 2px 6px rgba(0,0,0,0.25) inset;}
+  .balance-box{background:#0B6E4F;color:#fff;border-radius:10px;padding:10px 16px;margin:14px 0;display:inline-block;font-weight:800;font-size:15px;}
 </style></head><body>
 <div class="toolbar">
   <button class="btn-print" onclick="window.print()">🖨️ طباعة</button>
   <button class="btn-close" onclick="window.close()">✕ إغلاق</button>
 </div>
-<h2>${escapeHtml(data.accountName)}</h2>
-<p>رقم الحساب: ${escapeHtml(data.accountNumber)}</p>
+<div class="letterhead">
+  <div class="logo">💰</div>
+  <div>
+    <h2>${escapeHtml(data.accountName)}</h2>
+    <p>رقم الحساب: ${escapeHtml(data.accountNumber)}</p>
+  </div>
+</div>
+<div class="balance-box">الرصيد الحالي: ${fmt(currentBalance)} ر.ع</div>
 <p>سجل الاقتطاعات — إجمالي المسحوب: ${fmt(totalAmount)} ر.ع</p>
 <table><thead><tr>
   <th>التاريخ</th><th>السبب</th><th>المبلغ الإجمالي</th><th>عدد المشاركين</th><th>نصيب الفرد</th><th>الأعضاء المشاركون</th>
 </tr></thead>
 <tbody>${rows}</tbody></table>
-<p style="margin-top:16px;">الرصيد الحالي: ${fmt(currentBalance)} ر.ع</p>
 </body></html>`;
 
     const win = window.open("", "_blank");
@@ -1057,6 +1103,15 @@ export default function WalletDashboard() {
               value={ghGistId}
               onChange={(e) => { setGhGistId(e.target.value); persistGhConfig(ghToken, e.target.value); }}
             />
+            <button
+              style={styles.saveGhBtn}
+              onClick={async () => {
+                await persistGhConfig(ghToken, ghGistId);
+                flashToast("تم حفظ الـ Token و Gist ID على هذا الجهاز، ولن يختفيا بعد التحديث");
+              }}
+            >
+              <Check size={14} /> حفظ الإعدادات على هذا الجهاز
+            </button>
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
               <button style={styles.backupBtn} disabled={gistBusy} onClick={saveToGist}>
                 <UploadCloud size={15} /> {gistBusy ? "جارٍ الحفظ…" : "حفظ نسخة في GitHub"}
@@ -1131,37 +1186,57 @@ export default function WalletDashboard() {
 
       {/* ===== Admin login modal ===== */}
       {loginOpen && (
-        <div style={styles.overlay} onClick={() => setLoginOpen(false)}>
+        <div style={styles.overlay} onClick={() => { setLoginOpen(false); setForgotPassConfirm(false); }}>
           <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>{data.adminPasswordHash ? "تسجيل دخول الإدارة" : "إنشاء كلمة مرور الإدارة"}</h3>
-              <button style={styles.iconBtn} onClick={() => setLoginOpen(false)}><X size={18} /></button>
+              <h3 style={styles.modalTitle}>
+                {forgotPassConfirm ? "إعادة تعيين كلمة المرور" : data.adminPasswordHash ? "تسجيل دخول الإدارة" : "إنشاء كلمة مرور الإدارة"}
+              </h3>
+              <button style={styles.iconBtn} onClick={() => { setLoginOpen(false); setForgotPassConfirm(false); }}><X size={18} /></button>
             </div>
-            {!data.adminPasswordHash && (
-              <p style={styles.hint}>لا توجد كلمة مرور إدارة بعد. أنشئ واحدة الآن لحماية التعديل على المحفظة.</p>
-            )}
-            <label style={styles.fieldLabel}>كلمة المرور</label>
-            <input
-              type="password"
-              style={styles.input}
-              value={loginPass}
-              onChange={(e) => setLoginPass(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-            />
-            {!data.adminPasswordHash && (
+
+            {forgotPassConfirm ? (
               <>
-                <label style={styles.fieldLabel}>تأكيد كلمة المرور</label>
-                <input type="password" style={styles.input} value={loginConfirm} onChange={(e) => setLoginConfirm(e.target.value)} />
+                <p style={styles.hint}>
+                  سيتم حذف كلمة المرور الحالية بالكامل، وستحتاج لإنشاء كلمة مرور جديدة فورًا. هذا الإجراء لا يمكن التراجع عنه.
+                </p>
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <button style={styles.logoutBtn} onClick={resetAdminPassword}>تأكيد إعادة التعيين</button>
+                  <button style={styles.smallGhostBtn} onClick={() => setForgotPassConfirm(false)}>تراجع</button>
+                </div>
+              </>
+            ) : (
+              <>
+                {!data.adminPasswordHash && (
+                  <p style={styles.hint}>لا توجد كلمة مرور إدارة بعد. أنشئ واحدة الآن لحماية التعديل على المحفظة.</p>
+                )}
+                <label style={styles.fieldLabel}>كلمة المرور</label>
+                <input
+                  type="password"
+                  style={styles.input}
+                  value={loginPass}
+                  onChange={(e) => setLoginPass(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+                />
+                {!data.adminPasswordHash && (
+                  <>
+                    <label style={styles.fieldLabel}>تأكيد كلمة المرور</label>
+                    <input type="password" style={styles.input} value={loginConfirm} onChange={(e) => setLoginConfirm(e.target.value)} />
+                  </>
+                )}
+                <label style={styles.checkboxRow}>
+                  <input type="checkbox" checked={rememberDevice} onChange={(e) => setRememberDevice(e.target.checked)} />
+                  <span>تذكرني على هذا الجهاز</span>
+                </label>
+                {loginError && <p style={styles.errorText}>{loginError}</p>}
+                <button style={styles.primaryBtn} onClick={handleLogin}>
+                  <LogIn size={16} /> {data.adminPasswordHash ? "دخول" : "إنشاء وتسجيل الدخول"}
+                </button>
+                {data.adminPasswordHash && (
+                  <button style={styles.forgotLink} onClick={() => setForgotPassConfirm(true)}>نسيت كلمة المرور؟</button>
+                )}
               </>
             )}
-            <label style={styles.checkboxRow}>
-              <input type="checkbox" checked={rememberDevice} onChange={(e) => setRememberDevice(e.target.checked)} />
-              <span>تذكرني على هذا الجهاز</span>
-            </label>
-            {loginError && <p style={styles.errorText}>{loginError}</p>}
-            <button style={styles.primaryBtn} onClick={handleLogin}>
-              <LogIn size={16} /> {data.adminPasswordHash ? "دخول" : "إنشاء وتسجيل الدخول"}
-            </button>
           </div>
         </div>
       )}
@@ -1194,8 +1269,8 @@ function AnnualTable({ data, year, monthTotals, grandTotal, totalPaidToDate, pri
       <thead>
         <tr>
           <th style={printMode ? printStyles.th : styles.matrixTh}>الاسم</th>
-          {MONTHS_SHORT.map((m) => (
-            <th key={m} style={printMode ? printStyles.th : styles.matrixTh}>{m}</th>
+          {MONTHS_SHORT.map((_, mi) => (
+            <th key={mi} style={printMode ? printStyles.th : styles.matrixTh}>{(mi + 1).toLocaleString("ar-OM")}</th>
           ))}
           <th style={printMode ? printStyles.th : styles.matrixTh}>الإجمالي</th>
         </tr>
@@ -1208,8 +1283,14 @@ function AnnualTable({ data, year, monthTotals, grandTotal, totalPaidToDate, pri
               <td style={printMode ? printStyles.tdName : styles.matrixTdName}>{m.name}</td>
               {MONTHS_SHORT.map((_, mi) => {
                 const v = m.payments[mKey(year, mi)] || 0;
+                const isPastOrCurrent = year < data.selectedYear || (year === data.selectedYear && mi <= data.selectedMonthIndex);
+                const cellStyle = printMode ? printStyles.td : styles.matrixTd;
+                let colorStyle;
+                if (v > 0) colorStyle = { color: "#0B6E4F", fontWeight: 700 };
+                else if (isPastOrCurrent) colorStyle = { color: "#B3261E", background: "#FDECEA" };
+                else colorStyle = { color: "#B7ADA0" };
                 return (
-                  <td key={mi} style={printMode ? printStyles.td : styles.matrixTd}>
+                  <td key={mi} style={{ ...cellStyle, ...colorStyle }}>
                     {v > 0 ? fmt(v) : "—"}
                   </td>
                 );
@@ -1323,6 +1404,8 @@ const styles = {
   backupBtnAlt: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "11px 0", borderRadius: 12, border: "1px solid #E3DCC9", background: "#fff", color: "#0B6E4F", fontFamily: "'Tajawal', sans-serif", fontWeight: 700, fontSize: 13 },
   checkboxRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#6b7d73", marginTop: 8 },
   errorText: { color: "#B3261E", fontSize: 12.5, margin: "4px 0 0" },
+  forgotLink: { marginTop: 10, background: "transparent", border: "none", color: "#6b7d73", fontSize: 12.5, textDecoration: "underline", fontFamily: "'Tajawal', sans-serif", alignSelf: "center" },
+  saveGhBtn: { marginTop: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, width: "100%", padding: "9px 0", borderRadius: 10, border: "1px solid #C9A227", background: "#FDF6E3", color: "#8A6D1A", fontFamily: "'Tajawal', sans-serif", fontWeight: 700, fontSize: 12.5 },
   whatsBtn: { marginTop: 10, padding: "12px 0", borderRadius: 12, border: "none", background: "#25D366", color: "#fff", fontFamily: "'Tajawal', sans-serif", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, flex: 1 },
   messagePreview: { background: "#FAF6EE", border: "1px solid #EFE9D8", borderRadius: 12, padding: 12, fontSize: 13, lineHeight: 1.9, whiteSpace: "pre-wrap", fontFamily: "'Tajawal', sans-serif", direction: "rtl", maxHeight: "45vh", overflowY: "auto" },
   withdrawRow: { display: "flex", alignItems: "center", gap: 10, padding: "10px 2px", borderBottom: "1px solid #F3EFE2" },
