@@ -392,6 +392,17 @@ const ADMIN_DEVICE_KEY = "hoq-wallet-admin-device";
 const GH_CONFIG_KEY = "hoq-wallet-gh-config";
 const MONTHS_AR = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
 const MONTHS_SHORT = ["ينا", "فبر", "مار", "أبر", "ماي", "يون", "يول", "أغس", "سبت", "أكت", "نوف", "ديس"];
+const DEFAULT_MESSAGE_TEMPLATE = `سلام عليكم ورحمة الله وبركاته
+تذكير بمحفظة الادخار الشهرية 💰
+حان موعد إيداع مساهمة شهر {الشهر} {السنة}، الرجاء التكرم بالإيداع قبل نهاية الشهر.
+
+المبلغ المطلوب لكل عضو: {المبلغ_الشهري} ريال
+
+اسم الحساب:- {اسم_الحساب}
+رقم الحساب :- {رقم_الحساب}
+الرصيد الحالي *{الرصيد}* ريال
+
+بارك الله فيكم ونفع بكم 🌿`;
 const DEFAULT_DATA = {
   accountName: "BAKHIT ALI MOHAMMED AL MAASHANI",
   accountNumber: "0398043661180027",
@@ -400,6 +411,7 @@ const DEFAULT_DATA = {
   selectedYear: 2026,
   selectedMonthIndex: 7,
   adminPasswordHash: "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9",
+  messageTemplate: DEFAULT_MESSAGE_TEMPLATE,
   members: [{
     id: "m1",
     name: "سعيد سالم",
@@ -498,6 +510,7 @@ function WalletDashboardApp() {
   const [loginConfirm, setLoginConfirm] = useState("");
   const [loginError, setLoginError] = useState("");
   const [forgotPassConfirm, setForgotPassConfirm] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState(false);
   const [rememberDevice, setRememberDevice] = useState(true);
   const [changePassOpen, setChangePassOpen] = useState(false);
   const [oldPass, setOldPass] = useState("");
@@ -801,6 +814,19 @@ function WalletDashboardApp() {
   const totalWithdrawn = data.withdrawals.reduce((s, w) => s + Number(w.amount || 0), 0);
   const totalAllPayments = data.members.reduce((s, m) => s + Object.values(m.payments).reduce((ss, v) => ss + Number(v || 0), 0), 0);
   const currentBalance = data.openingBalance + totalAllPayments - totalWithdrawn;
+  const grossInflow = data.openingBalance + totalAllPayments;
+  const sortedWithdrawals = [...data.withdrawals].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  let runningBalance = grossInflow;
+  const withdrawalLedger = sortedWithdrawals.map(w => {
+    const before = runningBalance;
+    const after = before - Number(w.amount || 0);
+    runningBalance = after;
+    return {
+      ...w,
+      balanceBefore: before,
+      balanceAfter: after
+    };
+  });
   const arrearsList = data.members.map(m => {
     const thisMonthPaid = m.payments[selKey] || 0;
     const unpaidThisMonth = thisMonthPaid < data.monthlyDue;
@@ -1008,25 +1034,30 @@ function WalletDashboardApp() {
     return Object.values(member.payments).reduce((s, v) => s + Number(v || 0), 0);
   }
   function buildMessage() {
-    const lines = [];
-    lines.push("سلام عليكم ورحمة الله وبركاته");
-    lines.push("لاتنسو المحفظة");
-    lines.push(`*${data.selectedYear}*`);
-    lines.push(`اسم الحساب:- ${data.accountName}`);
-    lines.push(`رقم الحساب :- ${data.accountNumber}`);
-    lines.push(`رصيد الحالي *${fmt(currentBalance)}*ريال`);
-    lines.push("");
-    lines.push("اللي قد دفع حساب المحفظه");
+    const template = data.messageTemplate || DEFAULT_MESSAGE_TEMPLATE;
     const nextKey = mKey(data.selectedMonthIndex === 11 ? data.selectedYear + 1 : data.selectedYear, data.selectedMonthIndex === 11 ? 0 : data.selectedMonthIndex + 1);
-    data.members.forEach((m, i) => {
+    const membersListText = data.members.map((m, i) => {
       const paidThis = (m.payments[selKey] || 0) >= data.monthlyDue;
       const paidNext = (m.payments[nextKey] || 0) >= data.monthlyDue;
       let mark = "";
       if (paidThis && paidNext) mark = " ☑️ ☑️";else if (paidThis) mark = " ☑️";
       let arrearsTxt = m.arrears < 0 ? ` ${fmt(m.arrears)} *متأخرات*` : "";
-      lines.push(`${i + 1}-${m.name}${mark}${arrearsTxt}`);
+      return `${i + 1}-${m.name}${mark}${arrearsTxt}`;
+    }).join("\n");
+    const replacements = {
+      "{الشهر}": MONTHS_AR[data.selectedMonthIndex],
+      "{السنة}": String(data.selectedYear),
+      "{المبلغ_الشهري}": fmt(data.monthlyDue),
+      "{اسم_الحساب}": data.accountName,
+      "{رقم_الحساب}": data.accountNumber,
+      "{الرصيد}": fmt(currentBalance),
+      "{قائمة_الأعضاء}": membersListText
+    };
+    let result = template;
+    Object.entries(replacements).forEach(([key, value]) => {
+      result = result.split(key).join(value);
     });
-    return lines.join("\n");
+    return result;
   }
   const message = buildMessage();
   async function copyMessage() {
@@ -1135,6 +1166,7 @@ function WalletDashboardApp() {
         </tr>`;
     }).join("");
     const totalAmount = data.withdrawals.reduce((s, w) => s + Number(w.amount || 0), 0);
+    const ledgerRows = withdrawalLedger.map(w => `<tr><td>${escapeHtml(w.date)}</td><td class="name">${escapeHtml(w.reason)}</td><td class="neg total">-${fmt(Number(w.amount))}</td><td>${fmt(w.balanceBefore)}</td><td class="total">${fmt(w.balanceAfter)}</td></tr>`).join("");
     const html = `<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>سجل الاقتطاعات</title>
 <style>
   body{font-family:Tahoma,Arial,sans-serif;padding:24px;color:#1B2A22;}
@@ -1155,6 +1187,7 @@ function WalletDashboardApp() {
   .letterhead{display:flex;align-items:center;gap:12px;border-bottom:2px solid #0B6E4F;padding-bottom:12px;margin-bottom:12px;}
   .logo{width:46px;height:46px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#12946b,#084A36);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;box-shadow:0 2px 6px rgba(0,0,0,0.25) inset;}
   .balance-box{background:#0B6E4F;color:#fff;border-radius:10px;padding:10px 16px;margin:14px 0;display:inline-block;font-weight:800;font-size:15px;}
+  h3.section{font-size:14px;margin:22px 0 8px;color:#0B6E4F;}
 </style></head><body>
 <div class="toolbar">
   <button class="btn-print" onclick="window.print()">🖨️ طباعة</button>
@@ -1173,6 +1206,11 @@ function WalletDashboardApp() {
   <th>التاريخ</th><th>السبب</th><th>المبلغ الإجمالي</th><th>عدد المشاركين</th><th>نصيب الفرد</th><th>الأعضاء المشاركون</th>
 </tr></thead>
 <tbody>${rows}</tbody></table>
+<h3 class="section">أثر الاستقطاعات على الرصيد</h3>
+<table><thead><tr>
+  <th>التاريخ</th><th>السبب</th><th>المبلغ</th><th>الرصيد قبل الاستقطاع</th><th>الرصيد بعد الاستقطاع</th>
+</tr></thead>
+<tbody>${ledgerRows}</tbody></table>
 </body></html>`;
     const win = window.open("", "_blank");
     if (!win) {
@@ -1651,7 +1689,49 @@ function WalletDashboardApp() {
       name: "Pencil",
       size: 11
     }), " الأعضاء")));
-  }))), tab === "settings" && React.createElement(React.Fragment, null, React.createElement("div", {
+  })), withdrawalLedger.length > 0 && React.createElement("div", {
+    style: styles.card,
+    className: "no-print"
+  }, React.createElement("h3", {
+    style: styles.sectionTitle
+  }, "أثر الاستقطاعات على الرصيد"), React.createElement("div", {
+    style: styles.tableScroll
+  }, React.createElement("table", {
+    style: styles.matrixTable
+  }, React.createElement("thead", null, React.createElement("tr", null, React.createElement("th", {
+    style: styles.matrixTh
+  }, "التاريخ"), React.createElement("th", {
+    style: styles.matrixTh
+  }, "السبب"), React.createElement("th", {
+    style: styles.matrixTh
+  }, "المبلغ"), React.createElement("th", {
+    style: styles.matrixTh
+  }, "الرصيد قبل الاستقطاع"), React.createElement("th", {
+    style: styles.matrixTh
+  }, "الرصيد بعد الاستقطاع"))), React.createElement("tbody", null, withdrawalLedger.map(w => React.createElement("tr", {
+    key: w.id
+  }, React.createElement("td", {
+    style: styles.matrixTd
+  }, w.date), React.createElement("td", {
+    style: styles.matrixTdName
+  }, w.reason), React.createElement("td", {
+    style: {
+      ...styles.matrixTd,
+      color: "#B3261E",
+      fontWeight: 700
+    }
+  }, "-", fmt(Number(w.amount))), React.createElement("td", {
+    style: styles.matrixTd
+  }, fmt(w.balanceBefore)), React.createElement("td", {
+    style: {
+      ...styles.matrixTd,
+      fontWeight: 700
+    }
+  }, fmt(w.balanceAfter))))))), React.createElement("div", {
+    style: styles.currentBalanceBanner
+  }, React.createElement("span", null, "الرصيد الحالي"), React.createElement("span", {
+    style: styles.currentBalanceBannerAmount
+  }, fmt(currentBalance), " ر.ع")))), tab === "settings" && React.createElement(React.Fragment, null, React.createElement("div", {
     style: styles.card
   }, React.createElement("h3", {
     style: styles.sectionTitle
@@ -1847,7 +1927,10 @@ function WalletDashboardApp() {
     onClick: submitWithdraw
   }, editWithdrawId ? "حفظ التعديلات" : "تسجيل الاقتطاع"))), messageOpen && React.createElement("div", {
     style: styles.overlay,
-    onClick: () => setMessageOpen(false)
+    onClick: () => {
+      setMessageOpen(false);
+      setEditingTemplate(false);
+    }
   }, React.createElement("div", {
     style: styles.modal,
     onClick: e => e.stopPropagation()
@@ -1857,13 +1940,52 @@ function WalletDashboardApp() {
     style: styles.modalTitle
   }, "رسالة واتساب الشهرية"), React.createElement("button", {
     style: styles.iconBtn,
-    onClick: () => setMessageOpen(false)
+    onClick: () => {
+      setMessageOpen(false);
+      setEditingTemplate(false);
+    }
   }, React.createElement(Icon, {
     name: "X",
     size: 18
-  }))), React.createElement("pre", {
+  }))), editingTemplate ? React.createElement(React.Fragment, null, React.createElement("p", {
+    style: styles.hint
+  }, "عدّل نص الرسالة كما تريد. المتغيرات بين قوسين ", "{ }", " تُستبدل تلقائيًا بالقيم الفعلية:", " ", "{الشهر}", " ", "{السنة}", " ", "{المبلغ_الشهري}", " ", "{اسم_الحساب}", " ", "{رقم_الحساب}", " ", "{الرصيد}", " ", "{قائمة_الأعضاء}"), React.createElement("textarea", {
+    style: styles.templateTextarea,
+    value: data.messageTemplate,
+    onChange: e => {
+      if (requireAdmin()) update(p => ({
+        ...p,
+        messageTemplate: e.target.value
+      }));
+    },
+    rows: 10
+  }), React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8
+    }
+  }, React.createElement("button", {
+    style: styles.smallGhostBtn,
+    onClick: () => {
+      if (requireAdmin()) update(p => ({
+        ...p,
+        messageTemplate: DEFAULT_MESSAGE_TEMPLATE
+      }));
+    }
+  }, "استعادة القالب الافتراضي"), React.createElement("button", {
+    style: styles.smallPrimaryBtn,
+    onClick: () => setEditingTemplate(false)
+  }, "تم"))) : React.createElement(React.Fragment, null, React.createElement("pre", {
     style: styles.messagePreview
-  }, message), React.createElement("div", {
+  }, message), React.createElement("button", {
+    style: styles.editTemplateBtn,
+    onClick: () => {
+      if (requireAdmin()) setEditingTemplate(true);
+    }
+  }, React.createElement(Icon, {
+    name: "Pencil",
+    size: 13
+  }), " تعديل نص الرسالة"), React.createElement("div", {
     style: {
       display: "flex",
       gap: 8
@@ -1880,7 +2002,7 @@ function WalletDashboardApp() {
   }, React.createElement(Icon, {
     name: "Share2",
     size: 16
-  }), " مشاركة عبر واتساب")))), loginOpen && React.createElement("div", {
+  }), " مشاركة عبر واتساب"))))), loginOpen && React.createElement("div", {
     style: styles.overlay,
     onClick: () => {
       setLoginOpen(false);
@@ -2754,6 +2876,34 @@ const styles = {
     fontWeight: 700,
     fontSize: 12.5
   },
+  templateTextarea: {
+    width: "100%",
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: "1px solid #E3DCC9",
+    fontFamily: "'Tajawal', sans-serif",
+    fontSize: 13,
+    background: "#FCFAF4",
+    resize: "vertical",
+    lineHeight: 1.8,
+    marginBottom: 8
+  },
+  editTemplateBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    width: "100%",
+    padding: "9px 0",
+    borderRadius: 10,
+    border: "1px dashed #B9CFC2",
+    background: "transparent",
+    color: "#0B6E4F",
+    fontFamily: "'Tajawal', sans-serif",
+    fontWeight: 700,
+    fontSize: 12.5,
+    marginBottom: 8
+  },
   whatsBtn: {
     marginTop: 10,
     padding: "12px 0",
@@ -2891,6 +3041,23 @@ const styles = {
     textAlign: "right",
     whiteSpace: "nowrap",
     fontWeight: 600
+  },
+  currentBalanceBanner: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    background: "#0B6E4F",
+    color: "#fff",
+    borderRadius: 12,
+    padding: "12px 16px",
+    marginTop: 14,
+    fontWeight: 700,
+    fontSize: 13.5
+  },
+  currentBalanceBannerAmount: {
+    fontFamily: "'Cairo', sans-serif",
+    fontSize: 16,
+    fontWeight: 800
   }
 };
 const rootEl = document.getElementById("root");
